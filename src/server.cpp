@@ -1,14 +1,23 @@
 #include <iostream>
 #include <stdlib.h>
-#include <string.h>
+#include <string>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <string.h>
+#include "data.cpp"
 
 #define PORT 8080
 
 using namespace std;
+
+string client_username = "user1";
+string client_password = "pass1";
+
+void deserialize_login_request(char *data, Login_request* login_request);
+void serialize_login_status(Login_status* login_status, char* data);
+char check_login(string username, string password);
 
 int main(int argc, char **argv) {
     int server_fd;
@@ -70,37 +79,57 @@ int main(int argc, char **argv) {
     cout << "[INFO]  Accepted new client @ " << client_ip << ":" << client_port << endl;
 
     // receive from the client
-    int USERNAMELEN = 1024;
-    int PASSWORDLEN = 1024;
     int MESSAGELEN = 1024;
-
-    char username[USERNAMELEN];
-    char password[PASSWORDLEN];
     char message[MESSAGELEN];
+    memset(message, 0, MESSAGELEN);
 
-    while (1) {
-        memset(username, 0, USERNAMELEN);
-        memset(password, 0, PASSWORDLEN);
-        memset(message, 0, MESSAGELEN);
+    int bytes_received = recv(client_socket, message, MESSAGELEN - 1, 0);
 
-        int bytes_received = recv(client_socket, message, MESSAGELEN - 1, 0);
+    if (bytes_received < 0) {
+        cerr << "[ERROR] Something went wrong while receiving data" << endl;
+    }
+    if (bytes_received == 0) {
+        cout << "[INFO]  Client is disconnected" << endl;
+    }
+    if (bytes_received > 0) {
+        Login_request* login_request = new Login_request;
+        deserialize_login_request(message, login_request);
 
-        if (bytes_received < 0) {
-            cerr << "[ERROR] Something went wrong while receiving data" << endl;
-            break;
+        cout << "Client> " << login_request->header.message_size << endl;
+        cout << "Client> " << login_request->header.message_type << endl;
+        cout << "Client> " << login_request->header.message_sequence << endl;
+        cout << "Client> " << login_request->username << endl;
+        cout << "Client> " << login_request->password << endl;
+
+        char status = check_login(login_request->username, login_request->password);
+        char data[1024];
+
+        Header login_status_header {
+            .message_size = 6,
+            .message_type = 1,
+            .message_sequence = 1
+        };
+
+        Login_status* login_status = new Login_status;
+        login_status->header = login_status_header;
+        login_status->status = status;
+
+        serialize_login_status(login_status, data);
+        
+        printf("%s\n", data);
+
+        if (send(client_socket, data, 1024, 0) < 0) {
+            cerr << "[ERROR] Message can't be send" << endl;
+        } else {
+            cout << "[INFO]  Login status sent to client" << endl;
         }
-        if (bytes_received == 0) {
-            cout << "[INFO]  Client is disconnected" << endl;
-            break;
-        }
-        if (bytes_received > 0) {
-            // TODO: process the answer to the client
-            cout << "Client> " << string(message, 0, bytes_received) << endl;
 
-            if (send(client_socket, message, bytes_received, 0) < 0) {
-                cerr << "[ERROR] Message can't be send" << endl;
-                break;
-            }
+        if (status) {
+            cout << "[INFO]  Login is correct" << endl;
+        } else {
+            close(client_socket);
+            cout << "[ERROR] Login is incorrect" << endl;
+            cout << "[INFO]  Client socket is closed" << endl;
         }
     }
 
@@ -111,4 +140,64 @@ int main(int argc, char **argv) {
     cout << "[INFO]  Client socket is closed" << endl;
 
     return 0;
+}
+
+void deserialize_login_request(char *data, Login_request* login_request){
+    int *q = (int*)data;
+
+    login_request->header.message_size = *q;
+    q++;
+
+    login_request->header.message_type = *q;
+    q++;
+
+    login_request->header.message_sequence = *q;
+    q++;
+
+    char *p = (char*)q;
+    int i = 0;
+    
+    string tmp_user = "";
+    string tmp_pass = "";
+    char c;
+
+    while (i < 32) {
+        c = *p;
+        tmp_user.push_back(c);
+        char *r = (char*)p + 32;
+        c = *r;
+        tmp_pass.push_back(c);
+        p++;
+        i++;
+    }
+    login_request->username = tmp_user;
+    login_request->password = tmp_pass;
+}
+
+char check_login(string username, string password) {
+    client_username.resize(32, '\0');
+    client_password.resize(32, '\0');
+    
+    if (client_username.compare(username) == 0 && 
+        client_password.compare(password) == 0) {
+            return 1; // OK
+    }
+    return 0; // FAILED
+}
+
+void serialize_login_status(Login_status* login_status, char* data) {
+    int *q = (int*)data;
+
+    *q = login_status->header.message_size;
+    q++;
+
+    *q = login_status->header.message_type;
+    q++;
+
+    *q = login_status->header.message_sequence;
+    q++;
+
+    char *p = (char*)q;
+
+    *p = login_status->status;
 }
